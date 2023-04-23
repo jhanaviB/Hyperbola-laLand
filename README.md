@@ -1,2 +1,2 @@
 # Hyperbola-laLand
-Hyperbole Generation
+Hyperbole Generation using Natural Language processing
