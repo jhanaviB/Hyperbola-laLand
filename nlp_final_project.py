@@ -8,70 +8,78 @@ Original file is located at
 
 # MOVER Paper Implementation
 """
-import pandas as pd
-from collections import defaultdict
-import logging
-import json
-import csv
-from torch.utils.data import Dataset
-from torch.utils.data import DataLoader
-from sklearn.model_selection import train_test_split
-from sklearn.metrics.pairwise import cosine_similarity
-import sklearn
-from datasets import Dataset
-from datasets import load_dataset
-import datasets
-from nltk.util import ngrams
-from tqdm.notebook import tqdm
-from transformers import AdamW, set_seed
-import torch.optim as optim
-import torch.nn as nn
-from transformers import AutoTokenizer, BartForConditionalGeneration, BartTokenizer
-from torchmetrics.functional import pairwise_cosine_similarity
-import transformers
-import torch
-import numpy as np
-import nltk
+
+!pip install -q torchmetrics transformers datasets sentencepiece
+
 import torchmetrics
 torchmetrics.__version__
 
+import pandas as pd
+import nltk
+import numpy as np
+import torch
+torch.__version__
+
+import datasets
+print(datasets.__version__)
+
+import pandas as pd
+import nltk
+import numpy as np
+import torch
+import transformers
+from torchmetrics.functional import pairwise_cosine_similarity
+from transformers import AutoTokenizer, BartForConditionalGeneration, BartTokenizer
+import torch.nn as nn
+import torch.optim as optim
+from transformers import AdamW, set_seed
+from tqdm.notebook import tqdm
+from nltk.util import ngrams
+
+from datasets import load_dataset
+from datasets import Dataset
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.model_selection import train_test_split
+from torch.utils.data import DataLoader
+import csv
+import json
+import logging
+from collections import defaultdict
 nltk.download('punkt')
 nltk.download('averaged_perceptron_tagger')
-logging.basicConfig(format='%(asctime)s  %(message)s',
-                    datefmt='%I:%M:%S', level=logging.INFO)
 
-logging.info("Reading HYPO-L and HYPO-XL")
 """# Loading data"""
-hypo_l = pd.read_csv('HYPO-L.csv')
-f = open('HYPO-XL.txt', 'r')
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+hypo_l = pd.read_csv('/content/drive/MyDrive/data/mover/HYPO-L.csv')
+f = open('/content/drive/MyDrive/data/mover/HYPO-XL.txt', 'r')
 hyperboles = f.readlines()
-hypo_xl = pd.DataFrame(hyperboles, columns=["hyperbole_sentences"])
+hypo_xl = pd.DataFrame(hyperboles, columns = ["hyperbole_sentences"])
 hypo_xl
 
 """# Masking"""
 
 # Generating POS n-grams
-logging.info("Generating POS n-grams")
 sentences = hypo_xl['hyperbole_sentences']
 
-# POS tags
-logging.info("POS tags")
+#POS tags
 list_sentences = []
 for sentence in sentences:
-    pos_tags = nltk.pos_tag(nltk.word_tokenize(sentence))
-    pos_bigrams = list(nltk.bigrams(pos_tags))
-    list_sentences.append(pos_bigrams)
+  pos_tags = nltk.pos_tag(nltk.word_tokenize(sentence))
+  pos_bigrams = list(nltk.bigrams(pos_tags))
+  list_sentences.append(pos_bigrams)
 
-for i, s in enumerate(sentences[:2]):
-    print(sentences[i])
-    print(list_sentences[i])
-# For POS n-grams we will group n consecutive POS tags together
+for i,s in enumerate(sentences[:2]):
+  print(sentences[i])
+  print(list_sentences[i])
+#For POS n-grams we will group n consecutive POS tags together
 
 # from stanfordcorenlp import StanfordCoreNLP
 
 # Set the path to the GloVe embeddings file
-logging.info("Loading GloVe embeddings")
-glove_file = 'glove.840B.300d.txt'
+glove_file = '/content/drive/MyDrive/data/mover/GloVe/glove.840B.300d.txt'
 
 # Load the GloVe embeddings into a dictionary
 glove_embeddings = {}
@@ -79,7 +87,7 @@ with open(glove_file, 'r', encoding='utf-8') as f:
     for line in f:
         values = line.split()
         if len(values) != 301:
-            continue
+          continue
         word = values[0]
         vector = np.asarray(values[1:], dtype='float32')
         glove_embeddings[word] = vector
@@ -87,181 +95,161 @@ with open(glove_file, 'r', encoding='utf-8') as f:
 # glove_embeddings["the"]
 
 # Hyperbolic patterns
-logging.info("Getting hyperbolic patterns")
-
-
 def get_hyperbolic_patterns():
-    hyperbolic_patterns = defaultdict(list)
-    with open("pattern.tsv") as file:
-        tsv_file = csv.reader(file, delimiter="\t")
-        for line in tsv_file:
-            llst_pos = line[0].split("+")
-            hyperbolic_patterns[len(llst_pos)].append(llst_pos)
-    return dict(sorted(hyperbolic_patterns.items(), key=lambda x: x[0]))
-
+  hyperbolic_patterns = defaultdict(list)
+  with open("/content/drive/MyDrive/data/mover/pattern.tsv") as file:
+    tsv_file = csv.reader(file, delimiter="\t")
+    for line in tsv_file:
+        llst_pos = line[0].split("+")
+        hyperbolic_patterns[len(llst_pos)].append(llst_pos)
+  return dict(sorted(hyperbolic_patterns.items(), key=lambda x:x[0]))
 
 def matching(word_patterns, pos_patterns, tokens, patterns):
-    """
-      word_patterns = [['It', 'is'],['is', 'hardly'],['hardly', 'believable']]
-      pos_patterns = [['PRP', 'VBZ'], ['VBZ', 'RB'], ['RB', 'JJ']]
-      patterns = [['VBZ', 'RB'],["NN","IN"]]
-      tokens = ['It','is','hardly','believable']
+  """
+    word_patterns = [['It', 'is'],['is', 'hardly'],['hardly', 'believable']]
+    pos_patterns = [['PRP', 'VBZ'], ['VBZ', 'RB'], ['RB', 'JJ']]
+    patterns = [['VBZ', 'RB'],["NN","IN"]]
+    tokens = ['It','is','hardly','believable']
 
-      Output: {
-        1: [['is'],['hardly'],['believable']],
-        2: [['hardly', 'believable'],['a', 'pretty']],
-        3: [['bold', 'as', 'brass']],
-        4: []
-      }
+    Output: {
+      1: [['is'],['hardly'],['believable']],
+      2: [['hardly', 'believable'],['a', 'pretty']],
+      3: [['bold', 'as', 'brass']],
+      4: []
+    }
 
-    """
-    candidates = []
-    for i, pattern in enumerate(pos_patterns):
-        if pattern in patterns:
-            candidates.append(word_patterns[i])
+  """
+  candidates = []
+  for i, pattern in enumerate(pos_patterns):
+    if pattern in patterns:
+      candidates.append(word_patterns[i])
 
-    return candidates
+  return candidates
 
 # Given patterns match against each sentence and generate patterns
 
-
 def mask(pdict_pattern, sentence):
-    """
-      sentence = It is hardly believable that such a pretty young lady is as bold as brass.\n
-      pdict_pattern = { 1: [["NNP"],["NNS"]], 2: [["NNS,IN"],["NN","IN"]]}
-      output = possible_candidates
-    """
-    possible_candidates = {}
-    tokens = nltk.word_tokenize(sentence)
-    pos_tags = nltk.pos_tag(tokens)
+  """
+    sentence = It is hardly believable that such a pretty young lady is as bold as brass.\n
+    pdict_pattern = { 1: [["NNP"],["NNS"]], 2: [["NNS,IN"],["NN","IN"]]}
+    output = possible_candidates
+  """
+  possible_candidates = {}
+  tokens = nltk.word_tokenize(sentence)
+  pos_tags = nltk.pos_tag(tokens)
 
-    for n_value, patterns in pdict_pattern.items():
-        pos_patterns = []
-        word_patterns = []
-        # print(pos_tags)
-        va = list(ngrams(pos_tags, n_value))
-        for i in range(len(va)):
-            vas = dict(va[i])
-            pos_patterns.append(list(vas.values()))
-            word_patterns.append(list(vas.keys()))
+  for n_value, patterns in pdict_pattern.items():
+    pos_patterns = []
+    word_patterns = []
+    # print(pos_tags)
+    va = list(ngrams(pos_tags, n_value))
+    for i in range(len(va)):
+      vas = dict(va[i])
+      pos_patterns.append(list(vas.values()))
+      word_patterns.append(list(vas.keys()))
 
-        possible_candidates[n_value] = matching(
-            word_patterns, pos_patterns, tokens, patterns)
-
-    return possible_candidates
+    possible_candidates[n_value] = matching(word_patterns, pos_patterns, tokens, patterns)
+  
+  return possible_candidates
 
 # Define a function to get the GloVe embedding of a word
-
-
 def get_glove_embedding(word):
     if word in glove_embeddings:
         return glove_embeddings[word]
     else:
         return np.zeros(300)
 
+def unexpected_score_Un(sentence,n_gram_candidates):
+  #word emebedding for one sentence
+  unexpectedness_for_all_ngrams = []
+  #Unexpected score Un
+  for n_gram in n_gram_candidates:
 
-def unexpected_score_Un(sentence, n_gram_candidates):
-    # word emebedding for one sentence
-    unexpectedness_for_all_ngrams = []
-    # Unexpected score Un
-    for n_gram in n_gram_candidates:
+    cos_sim = []
 
-        cos_sim = []
+    text_to_ignore = " ".join(n_gram)
+    new_sentence = sentence.replace(text_to_ignore, "", 1)
+    tokenized_sentence = nltk.word_tokenize(new_sentence)
 
-        text_to_ignore = " ".join(n_gram)
-        new_sentence = sentence.replace(text_to_ignore, "", 1)
-        tokenized_sentence = nltk.word_tokenize(new_sentence)
+    for i in range(len(n_gram)):
+      for j in range(len(tokenized_sentence)):
+        # print("ngram",n_gram[i])
+        # print("tokenized sent", tokenized_sentence[j])
+        a = get_glove_embedding(n_gram[i])
+        b = get_glove_embedding(tokenized_sentence[j])
+        a = a.reshape(1,-1)
+        b = b.reshape(1,-1)
+        cos_sim.append(cosine_similarity(a,b))
+    
+    unexpectedness_for_all_ngrams.append(np.mean(cos_sim))
 
-        for i in range(len(n_gram)):
-            for j in range(len(tokenized_sentence)):
-                # print("ngram",n_gram[i])
-                # print("tokenized sent", tokenized_sentence[j])
-                a = get_glove_embedding(n_gram[i])
-                b = get_glove_embedding(tokenized_sentence[j])
-                a = a.reshape(1, -1)
-                b = b.reshape(1, -1)
-                cos_sim.append(cosine_similarity(a, b))
 
-        unexpectedness_for_all_ngrams.append(np.mean(cos_sim))
-
-        # return (torch.mean(cos_sim[0]))
-    return zip(unexpectedness_for_all_ngrams, n_gram_candidates)
-
+    #return (torch.mean(cos_sim[0]))
+  return zip(unexpectedness_for_all_ngrams, n_gram_candidates)
 
 pos_n_gram_patterns = get_hyperbolic_patterns()
 possible_candidates = mask(pos_n_gram_patterns, sentences[0])
 
 hyperparameters = {
     "learning_rate": 0.0001,
-    "num_epochs": 2,  # set to very high number
-    # Actual batch size will this x 8 (was 8 before but can cause OOM)
-    "train_batch_size": 1,
-    # Actual batch size will this x 8 (was 32 before but can cause OOM)
-    "eval_batch_size": 1,
+    "num_epochs": 2, # set to very high number
+    "train_batch_size": 1, # Actual batch size will this x 8 (was 8 before but can cause OOM)
+    "eval_batch_size": 1, # Actual batch size will this x 8 (was 32 before but can cause OOM)
     "seed": 42,
-    "patience": 3,  # early stopping
+    "patience": 3, # early stopping
     "output_dir": "/content/",
 }
 
 
+
 tokenizer = BartTokenizer.from_pretrained('facebook/bart-base')
 
-
 def mask_a_sentence(sentence, pos_n_gram_patterns):
-    possible_candidates = mask(pos_n_gram_patterns, sentence)
-    un_dict = []
-    for i in range(len(possible_candidates)):
-        un_dict += list(unexpected_score_Un(sentence,
-                        possible_candidates[i+1]))
-    res = list(zip(*un_dict))
-    indices = np.argsort(res[0])[:3]
-    n_grams = []
-    for i in indices:
-        n_grams.append(res[1][i])
-    # print(n_grams)
-    masked_sentences = []
-    for i in n_grams:
-        span = " ".join(i)
-        masked_sentences.append(sentence.replace(span, "<mask>"))
-    return masked_sentences
-
+  possible_candidates = mask(pos_n_gram_patterns, sentence)
+  un_dict = []
+  for i in range(len(possible_candidates)):
+    un_dict += list(unexpected_score_Un(sentence, possible_candidates[i+1]))
+  res = list(zip(*un_dict))
+  indices = np.argsort(res[0])[:3]
+  n_grams = []
+  for i in indices:
+    n_grams.append(res[1][i])
+  # print(n_grams)
+  masked_sentences = []
+  for i in n_grams:
+    span = " ".join(i)
+    masked_sentences.append(sentence.replace(span, "<mask>"))
+  return masked_sentences
 
 x = []
-with open("dataset.txt", "r") as file:
+with open("/content/drive/MyDrive/data/mover/dataset.txt", "r") as file:
     dataset = file.readlines()
     x = eval(dataset[0])
 
 max_input_length = 512
 max_target_length = 512
-
-
 def preprocess_examples(examples):
-    # encode the documents
-    inputs = examples['masked']
-    outputs = examples['original']
+  # encode the documents
+  inputs = examples['masked']
+  outputs = examples['original']
+  
+  # inputs = [prefix + article for article in articles]
+  model_inputs = tokenizer(inputs, max_length=max_input_length, padding="max_length", truncation=True)
 
-    # inputs = [prefix + article for article in articles]
-    model_inputs = tokenizer(
-        inputs, max_length=max_input_length, padding="max_length", truncation=True)
+  # encode the summaries
+  labels = tokenizer(outputs, max_length=max_target_length, padding="max_length", truncation=True).input_ids
 
-    # encode the summaries
-    labels = tokenizer(outputs, max_length=max_target_length,
-                       padding="max_length", truncation=True).input_ids
+  # important: we need to replace the index of the padding tokens by -100
+  # such that they are not taken into account by the CrossEntropyLoss
+  labels_with_ignore_index = []
+  for labels_example in labels:
+    labels_example = [label if label != 0 else label for label in labels_example]
+    labels_with_ignore_index.append(labels_example)
+  
+  model_inputs["labels"] = labels_with_ignore_index
 
-    # important: we need to replace the index of the padding tokens by -100
-    # such that they are not taken into account by the CrossEntropyLoss
-    labels_with_ignore_index = []
-    for labels_example in labels:
-        labels_example = [label if label !=
-                          0 else label for label in labels_example]
-        labels_with_ignore_index.append(labels_example)
+  return model_inputs
 
-    model_inputs["labels"] = labels_with_ignore_index
-
-    return model_inputs
-
-
-logging.info("Creating train, test and validation data")
 # Split the data into train, validation, and test sets
 train_data = pd.DataFrame.from_dict(x[:int(len(x)*0.6)])
 val_data = pd.DataFrame.from_dict(x[int(len(x)*0.6):int(len(x)*0.8)])
@@ -272,202 +260,148 @@ train_ds = Dataset.from_pandas(train_data)
 val_ds = Dataset.from_pandas(val_data)
 test_ds = Dataset.from_pandas(test_data)
 
-encoded_train_ds = train_ds.map(
-    preprocess_examples, batched=True, remove_columns=train_ds.column_names)
-encoded_val_ds = val_ds.map(
-    preprocess_examples, batched=True, remove_columns=val_ds.column_names)
-encoded_test_ds = test_ds.map(
-    preprocess_examples, batched=True, remove_columns=test_ds.column_names)
-
+encoded_train_ds = train_ds.map(preprocess_examples, batched=True, remove_columns=train_ds.column_names)
+encoded_val_ds = val_ds.map(preprocess_examples, batched=True, remove_columns=val_ds.column_names)
+encoded_test_ds = test_ds.map(preprocess_examples, batched=True, remove_columns=test_ds.column_names)
 
 def create_dataloaders(train_batch_size=8, eval_batch_size=32):
     # train_dataloader = DataLoader(encoded_train_ds, shuffle=True)
     # val_dataloader = DataLoader(encoded_val_ds, shuffle=False)
-
+    
     # return train_dataloader, val_dataloader
 
-    train_dataloader = DataLoader(
-        encoded_train_ds, shuffle=True, batch_size=train_batch_size)
-    val_dataloader = DataLoader(
-        encoded_val_ds, shuffle=False, batch_size=eval_batch_size)
-
+    train_dataloader = DataLoader(encoded_train_ds, shuffle=True, batch_size=train_batch_size)
+    val_dataloader = DataLoader(encoded_val_ds, shuffle=False, batch_size=eval_batch_size)
+    
     return train_dataloader, val_dataloader
 
-
-logging.info("Loading model and tokenizer")
 model = BartForConditionalGeneration.from_pretrained('facebook/bart-base')
 # Set the model to train mode
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 train_dataloader, val_dataloader = create_dataloaders(
-    train_batch_size=hyperparameters["train_batch_size"], eval_batch_size=hyperparameters["eval_batch_size"]
-)
+          train_batch_size=hyperparameters["train_batch_size"], eval_batch_size=hyperparameters["eval_batch_size"]
+      )
 
 limit = 1
 # Loop through the training dataloader
 for step, batch in enumerate(train_dataloader):
-    if step == limit:
-        break
-    input_ids = torch.tensor([[*x] for x in batch['input_ids']]).to(device)
-    attention_mask = torch.tensor(
-        [[*x] for x in batch['attention_mask']]).to(device)
-    target_ids = torch.tensor([[*x] for x in batch['labels']]).to(device)
-    print(input_ids.T)
-    print(attention_mask.shape)
-    print(target_ids.T)
-    print(tokenizer.batch_decode(target_ids.T))
-
-logging.info("Running across multiple GPU's")
-if torch.cuda.device_count() > 1:
-    model = nn.DataParallel(model)
+  if step == limit:
+    break
+  input_ids = torch.tensor([[*x] for x in batch['input_ids']]).to(device)
+  attention_mask = torch.tensor([[*x] for x in batch['attention_mask']]).to(device)
+  target_ids = torch.tensor([[*x] for x in batch['labels']]).to(device)
+  print(input_ids.T)
+  print(attention_mask.shape)
+  print(target_ids.T)
+  print(tokenizer.batch_decode(target_ids.T))
 
 # Define the training function
-
-
 def train():
 
     # Instantiate optimizer
     optimizer = AdamW(model.parameters(), lr=hyperparameters["learning_rate"])
-
-    min_val_loss = float('inf')
+    
     for epoch in range(hyperparameters["num_epochs"]):
-        # Define the model and tokenizer
+      # Define the model and tokenizer
+      
+      # Set the model to train mode
+      model.to(device)
+      model.train()
 
-        # Set the model to train mode
-        model.to(device)
-        model.train()
+      # Prepare everything
+      train_dataloader, val_dataloader = create_dataloaders(
+          train_batch_size=hyperparameters["train_batch_size"], eval_batch_size=hyperparameters["eval_batch_size"]
+      )
+      
+      # Loop through the training dataloader
+      for step, batch in enumerate(train_dataloader):
+          # Move the batch to the device
+          
+          # batch = {k: torch.tensor(v).to("cuda") for k, v in batch.items()}
+          # Clear the gradients
+          optimizer.zero_grad()
+          
+          # Get the input and target sequences
+          input_ids = torch.tensor([[*x] for x in batch['input_ids']]).to(device)
+          attention_mask = torch.tensor([[*x] for x in batch['attention_mask']]).to(device)
+          target_ids = torch.tensor([[*x] for x in batch['labels']]).to(device)
+        
+          # Generate the outputs
+          outputs = model(input_ids=input_ids.T, attention_mask=attention_mask.T,
+                          labels=target_ids.T)
+          
+          # Compute the loss
+          loss = outputs.loss
 
-        # Prepare everything
-        train_dataloader, val_dataloader = create_dataloaders(
-            train_batch_size=hyperparameters["train_batch_size"], eval_batch_size=hyperparameters["eval_batch_size"]
-        )
+          # Compute the gradients
+          loss.backward()
+          
+          # Clip the gradients to avoid exploding gradients
+          torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+          
+          # Update the parameters
+          optimizer.step()
 
-        # Loop through the training dataloader
-        for step, batch in enumerate(train_dataloader):
-            # Move the batch to the device
+          optimizer.zero_grad()
+          
+          # Print the loss every 10 steps
+          if step % 20 == 0:
+              # logging.info(f"Step [{step}/{len(train_dataloader)}], Loss: {loss.item():.4f}")
+              print(f'Step [{step}/{len(train_dataloader)}], Loss: {loss.item():.4f}')
 
-            # batch = {k: torch.tensor(v).to("cuda") for k, v in batch.items()}
-            # Clear the gradients
-            optimizer.zero_grad()
-
-            # Get the input and target sequences
-            input_ids = torch.tensor(
-                [[*x] for x in batch['input_ids']]).to(device)
-            attention_mask = torch.tensor(
-                [[*x] for x in batch['attention_mask']]).to(device)
-            target_ids = torch.tensor(
-                [[*x] for x in batch['labels']]).to(device)
-
-            # Generate the outputs
-            outputs = model(input_ids=input_ids.T, attention_mask=attention_mask.T,
-                            labels=target_ids.T)
-
-            # Compute the loss
-            loss = outputs.loss
-
-            # Compute the gradients
-            loss.backward()
-
-            # Clip the gradients to avoid exploding gradients
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-
-            # Update the parameters
-            optimizer.step()
-
-            optimizer.zero_grad()
-
-            # Print the loss every 10 steps
-            if step % 20 == 0:
-                # logging.info(f"Step [{step}/{len(train_dataloader)}], Loss: {loss.item():.4f}")
-                print(
-                    f'Step [{step}/{len(train_dataloader)}], Loss: {loss.item():.4f}')
-
-                # Evaluate at the end of the epoch (distributed evaluation as we have 8 TPU cores)
-        model.eval()
-        validation_losses = []
-        for batch in val_dataloader:
-            input_ids = torch.tensor(
-                [[*x] for x in batch['input_ids']]).to(device)
-            attention_mask = torch.tensor(
-                [[*x] for x in batch['attention_mask']]).to(device)
-            target_ids = torch.tensor(
-                [[*x] for x in batch['labels']]).to(device)
-            with torch.no_grad():
-                outputs = model(input_ids=input_ids.T, attention_mask=attention_mask.T,
-                                labels=target_ids.T)
-            loss = outputs.loss
+        # Evaluate at the end of the epoch (distributed evaluation as we have 8 TPU cores)
+      model.eval()
+      validation_losses = []
+      for batch in val_dataloader:
+          input_ids = torch.tensor([[*x] for x in batch['input_ids']]).to(device)
+          attention_mask = torch.tensor([[*x] for x in batch['attention_mask']]).to(device)
+          target_ids = torch.tensor([[*x] for x in batch['labels']]).to(device)
+          with torch.no_grad():
+              outputs = model(input_ids=input_ids, attention_mask=attention_mask,
+                          labels=target_ids)
+          loss = outputs.loss
             # We gather the loss from the 8 TPU cores to have them all.
-            validation_losses.append(loss)
+          validation_losses.append(loss)
 
-        # Compute average validation loss
-        val_loss = torch.stack(validation_losses).sum(
-        ).item() / len(validation_losses)
-        # Use accelerator.print to print only on the main process.
-        print(f"epoch {epoch}: validation loss:", val_loss)
-        if val_loss < min_val_loss:
-            epochs_no_improve = 0
-            min_val_loss = val_loss
-            continue
-        else:
-            epochs_no_improve += 1
-            # Check early stopping condition
-            if epochs_no_improve == hyperparameters["patience"]:
-                print("Early stopping!")
-                break
-
-
-logging.info("Training")
+      # Compute average validation loss
+      val_loss = torch.stack(validation_losses).sum().item() / len(validation_losses)
+      # Use accelerator.print to print only on the main process.
+      print(f"epoch {epoch}: validation loss:", val_loss)
+      if val_loss < min_val_loss:
+        epochs_no_improve = 0
+        min_val_loss = val_loss
+        continue
+      else:
+        epochs_no_improve += 1
+        # Check early stopping condition
+        if epochs_no_improve == hyperparameters["patience"]:
+          print("Early stopping!")
+          break
 
 train()
-logging.info("Saving the model")
-torch.save(model.state_dict(), "model.pickle")
+
+torch.save(model.state_dict(), "/content/drive/MyDrive/data/mover/model.pickle")
 
 # model = None
 # with open("/content/drive/MyDrive/data/mover/model.pickle", "r") as file:
 #     dataset = file.readlines()
 #     model = eval(dataset[0])
-model.load_state_dict(torch.load('model.pickle'))
+model.load_state_dict(torch.load('/content/drive/MyDrive/data/mover/model.pickle'))
 model.eval()
 
 max_input_length = 512
-
-
-def test_model(test_data, n):
-    examples = test_data.original.sample(n)
-    for sentence in examples:
-        print("Original Sentence")
-        print(sentence)
-        print("Over Generation fine tuned")
-        print(over_generate(sentence, model.to('cpu')))
-        print()
-
-
 def over_generate(sentence):
-    masked_sentences = mask_a_sentence(sentence, pos_n_gram_patterns)
-    print(masked_sentences)
-    input_ids = tokenizer(
-        masked_sentences, max_length=max_input_length, padding="max_length")["input_ids"]
-    logits = model.generate(torch.tensor(input_ids).to('cuda'))
-    return tokenizer.batch_decode(logits, skip_special_tokens=True)
-
+  masked_sentences = mask_a_sentence(sentence, pos_n_gram_patterns)
+  print(masked_sentences)
+  input_ids = tokenizer(masked_sentences, max_length=max_input_length, padding="max_length")["input_ids"]
+  logits = model.generate(torch.tensor(input_ids).to('cuda'))
+  return tokenizer.batch_decode(logits, skip_special_tokens=True)
 
 print(over_generate("This is a well written sentence"))
 
-# Content Preservation
-hypo_frame = pd.read_csv(
-    '/content/drive/MyDrive/data/mover/HYPO.tsv', delimiter='\t')
-content_preservation_dataset = pd.DataFrame(
-    columns=["Sentence_1", "Sentence_2", "Similar_Meaning"])
-content_preservation_dataset_index = 0
-for i in hypo_frame.index:
-    content_preservation_dataset.loc[content_preservation_dataset_index] = [
-        hypo_frame['HYPO'][i], hypo_frame['PARAPHRASES'][i], 1]
-    content_preservation_dataset_index += 1
-    content_preservation_dataset.loc[content_preservation_dataset_index] = [
-        hypo_frame['HYPO'][i], hypo_frame['MINIMAL UNITS CORPUS'][i], 0]
-    content_preservation_dataset_index += 1
-
-'''
+from torch.utils.data import Dataset
+from torch.utils.data import DataLoader
 class BertDataset(Dataset):
     def __init__(self, tokenizer, max_length):
         super(BertDataset, self).__init__()
@@ -536,7 +470,7 @@ for param in model.bert_model.parameters():
 def finetune(epochs,dataloader,model,loss_fn,optimizer):
     model.to(device)
     model.train()
-    for  epoch in range(epochs):
+    for epoch in range(epochs):
         print(epoch)
         
         loop=tqdm(enumerate(dataloader),leave=False,total=len(dataloader))
@@ -560,7 +494,7 @@ def finetune(epochs,dataloader,model,loss_fn,optimizer):
             
             optimizer.step()
             
-            pred = np.where(output.to('cpu') >= 0, 1, 0)
+            pred = torch.where(output >= 0, torch.tensor(1), torch.tensor(0))
 
             num_correct = sum(1 for a, b in zip(pred, label) if a[0] == b[0])
             num_samples = pred.shape[0]
@@ -569,12 +503,12 @@ def finetune(epochs,dataloader,model,loss_fn,optimizer):
             print(f'Got {num_correct} / {num_samples} with accuracy {float(num_correct)/float(num_samples)*100:.2f}')
             
             # Show progress while training
-            loop.set_description(f'Epoch={epoch}/{epochs}')    
+            loop.set_description(f'Epoch={epoch}/{epochs}')
             loop.set_postfix(loss=loss.item(),acc=accuracy)
 
     return model
 
-#model=finetune(5, dataloader, model, loss_fn, optimizer)
+model=finetune(5, dataloader, model, loss_fn, optimizer)
 
 hypo_frame = pd.read_csv('/content/drive/MyDrive/data/mover/HYPO.tsv',delimiter='\t')
 hypo_frame1 = pd.DataFrame(pd.concat([hypo_frame['HYPO'],hypo_frame['PARAPHRASES'],hypo_frame['MINIMAL UNITS CORPUS']],axis = 0),columns=['SENTENCES'])
@@ -583,6 +517,49 @@ hypo_l = hypo_l.iloc[1:]
 hypo_frame1 = pd.concat([hypo_l['sentence'],hypo_l['label']],axis=1)
 hypo_frame1.to_csv('Bert.csv',index= False)
 print(hypo_frame1)
+
+def test_model(test_data, n):
+  examples = test_data.original.sample(n)
+  for sentence in examples:
+    print("Original Sentence")
+    print(sentence)
+    print("Over Generation fine tuned")
+    print(over_generate(sentence, model.to('cpu')))
+    print()
+
+hypo_frame = pd.read_csv('/content/drive/MyDrive/data/mover/HYPO.tsv',delimiter='\t')
+hypo_frame1 = pd.DataFrame(pd.concat([hypo_frame['HYPO'],hypo_frame['PARAPHRASES'],hypo_frame['MINIMAL UNITS CORPUS']],axis = 0),columns=['SENTENCES'])
+hypo_frame1['LABELS']=[1 if i<709 else 0 for i in range(2127)]
+hypo_l = hypo_l.iloc[1:]
+hypo_frame1 = pd.concat([hypo_l['sentence'],hypo_l['label']],axis=1)
+hypo_frame1.to_csv('Bert.csv',index= False)
+print(hypo_frame1)
+
+content_preservation_dataset.to_csv("/content/drive/MyDrive/data/mover/content_preservation_dataset.csv")
+
+def process_inputExample(df):
+  train_examples = []
+  for i in df.index:
+    train_examples.append(InputExample(texts = [df.Sentence_1[i], df.Sentence_2[i]], label = float(df.Similar_Meaning[i])))
+  return train_examples
+
+from sentence_transformers import SentenceTransformer, InputExample, losses, evaluation
+
+model = SentenceTransformer('sentence-transformers/paraphrase-distilroberta-base-v1')
+
+train_examples = process_inputExample(content_preservation_dataset)
+train_dataloader = DataLoader(train_examples, shuffle=True, batch_size=16)
+train_loss = losses.CosineSimilarityLoss(model)
+model.fit(train_objectives=[(train_dataloader, train_loss)], epochs=1, warmup_steps=100)
+
+sentences1 = ['We all cracked up at the joke.', 'Every flavor is dynamite.', 'She is sinking in a sea of misery.']
+sentences2 = ['We all laughed at the joke.', 'Love you so much.', 'Pirates where sinking in a sea of cold water.']
+
+scores = [1, 0, 0]
+
+evaluator = evaluation.EmbeddingSimilarityEvaluator(sentences1, sentences2, scores)
+embeddings = model.encode([sentences1[0], sentences2[0]])
+np.dot(embeddings[0],embeddings[1])/(np.linalg.norm(embeddings[0])*np.linalg.norm(embeddings[1]))
 
 # glove_embeddings = {}
 # with open("/content/drive/MyDrive/data/mover/GloVe/glove_embeddings.json", "r") as file:
@@ -773,4 +750,3 @@ print(hypo_frame1)
 #     unwrapped_model = accelerator.unwrap_model(model)
 #     # Use accelerator.save to save
 #     unwrapped_model.save_pretrained(hyperparameters["output_dir"], save_function=accelerator.save)
-'''
