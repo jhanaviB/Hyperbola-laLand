@@ -9,27 +9,17 @@ Original file is located at
 # MOVER Paper Implementation
 """
 
-from data_processing import DataProcessing
-from sentence_transformers import SentenceTransformer, InputExample, losses, evaluation
-from torch.utils.data import Dataset
 import pandas as pd
 import nltk
 import numpy as np
 import torch
-import datasets
 import transformers
-from torchmetrics.functional import pairwise_cosine_similarity
-from transformers import AutoTokenizer, BartForConditionalGeneration, BartTokenizer
-import torch.nn as nn
-import torch.optim as optim
-from transformers import AdamW, set_seed
-from tqdm.notebook import tqdm
-from nltk.util import ngrams
-from sklearn.model_selection import train_test_split
-from torch.utils.data import DataLoader
+from transformers import BartTokenizer
+from transformers import AdamW
 from bart import TrainBart
+from bert import TrainBert
+from distilroberta import TrainDistilRoberta
 import csv
-import json
 import logging
 from collections import defaultdict
 from config import hyperparameters, PATH_HYPO_L, PATH_HYPO_XL, PATH_GLOVE_EMBED, PATH_POS_PATTERNS, MAX_INPUT_LENGTH, MAX_TARGET_LENGTH
@@ -46,6 +36,8 @@ class Mover():
         self.hypo_l = None
         self.glove_embeddings = dict()
         self.tokenizer = BartTokenizer.from_pretrained('facebook/bart-base')
+        self.bert_tokenizer = transformers.BertTokenizer.from_pretrained(
+            "bert-base-uncased")
         self.dataset = None
         # Set the model to train mode
         self.device = torch.device(
@@ -107,7 +99,6 @@ class Mover():
         return dict(sorted(hyperbolic_patterns.items(), key=lambda x: x[0]))
 
         # Given patterns match against each sentence and generate patterns
-    
 
     def load_dataset(self):
         x = []
@@ -118,13 +109,53 @@ class Mover():
 
     def train_hyperbole_generator(self):
         trainer = TrainBart(
-            optimizer=AdamW, tokenizer=self.tokenizer, 
+            optimizer=AdamW, tokenizer=self.tokenizer,
             dataset=self.dataset, glove_embed=self.glove_embeddings, device=self.device)
         # trainer.train()
         trainer.load_prev_checkpoint()
         pos_n_gram_patterns = self.get_hyperbolic_patterns()
         print(trainer.over_generate(
             "This is a well written sentence", pos_n_gram_patterns))
+
+        generated_hyperboles = trainer.over_generate(
+            "This is a well written sentence", pos_n_gram_patterns)
+
+        bert_trainer = TrainBert(
+            device=self.device, tokenizer=self.bert_tokenizer)
+        bert_model = bert_trainer.finetune(5)
+
+        distil_roberta_trainer = TrainDistilRoberta()
+        distill_roberta_model = distil_roberta_trainer.finetune
+
+        for i in generated_hyperboles:
+            inputs = self.bert_tokenizer.encode_plus(
+                i,
+                None,
+                pad_to_max_length=True,
+                add_special_tokens=True,
+                return_attention_mask=True,
+                max_length=512,
+            )
+            ids = torch.tensor(inputs["input_ids"]).unsqueeze(0)
+            token_type_ids = torch.tensor(
+                inputs["token_type_ids"]).unsqueeze(0)
+            mask = torch.tensor(inputs["attention_mask"]).unsqueeze(0)
+            with torch.no_grad():
+                output = bert_model(ids=ids, mask=mask,
+                                    token_type_ids=token_type_ids)
+                prob = torch.sigmoid(output).item()
+                print(i, prob)
+
+        sentences1 = ["Mind you don't tread in that puddle.",
+                      "Mind you don't tread in that puddle.", "Mind you don't tread in that puddle."]
+        sentences2 = ["Make sure you don't tread in that puddle.",
+                      "Mind you don't tread in that direction.", "Mind you don't want to drown in that puddle."]
+
+        for i in range(len(sentences1)):
+            embeddings = distill_roberta_model.encode(
+                [sentences1[i], sentences2[i]])
+            print(sentences2[i], np.dot(embeddings[0], embeddings[1]) /
+                  (np.linalg.norm(embeddings[0])*np.linalg.norm(embeddings[1])))
 
 
 if __name__ == "__main__":
