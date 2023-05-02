@@ -28,9 +28,20 @@ class BERT(nn.Module):
 class TrainBert():
     def __init__(self, device='cpu', tokenizer=None) -> None:
         self.tokenizer = tokenizer
-        self.dataset = BertDataset(self.tokenizer, max_length=MAX_INPUT_LENGTH)
-        self.dataloader = DataLoader(dataset=self.dataset, batch_size=32)
         self.device = device
+        self.dataloader = DataLoader(dataset=self.dataset, batch_size=32)
+        # self._load_dataset()
+        self.dataset = BertDataset(self.tokenizer, max_length=MAX_INPUT_LENGTH)
+
+    def _load_dataset(self):
+        hypo_frame = pd.read_csv(
+            '/content/drive/MyDrive/data/mover/HYPO.tsv', delimiter='\t')
+        hypo_frame1 = pd.DataFrame(pd.concat([hypo_frame['HYPO'], hypo_frame['PARAPHRASES'],
+                                              hypo_frame['MINIMAL UNITS CORPUS']], axis=0), columns=['SENTENCES'])
+        hypo_frame1['LABELS'] = [1 if i < 709 else 0 for i in range(2127)]
+        hypo_l = hypo_l.iloc[1:]
+        hypo_frame1 = pd.concat([hypo_l['sentence'], hypo_l['label']], axis=1)
+        hypo_frame1.to_csv('Bert.csv', index=False)
 
     def finetune(self, epochs):
         model = BERT()
@@ -88,22 +99,11 @@ class TrainBert():
         return model
 
 
-def test_model(test_data, n):
-    examples = test_data.original.sample(n)
-    for sentence in examples:
-        print("Original Sentence")
-        print(sentence)
-        print("Over Generation fine tuned")
-        print(over_generate(sentence, model.to('cpu')))
-        print()
-
-
-hypo_frame = pd.read_csv(
-    '/content/drive/MyDrive/data/mover/HYPO.tsv', delimiter='\t')
-hypo_frame1 = pd.DataFrame(pd.concat([hypo_frame['HYPO'], hypo_frame['PARAPHRASES'],
-                                      hypo_frame['MINIMAL UNITS CORPUS']], axis=0), columns=['SENTENCES'])
-hypo_frame1['LABELS'] = [1 if i < 709 else 0 for i in range(2127)]
-hypo_l = hypo_l.iloc[1:]
-hypo_frame1 = pd.concat([hypo_l['sentence'], hypo_l['label']], axis=1)
-hypo_frame1.to_csv('Bert.csv', index=False)
-print(hypo_frame1)
+# def test_model(test_data, n):
+#     examples = test_data.original.sample(n)
+#     for sentence in examples:
+#         print("Original Sentence")
+#         print(sentence)
+#         print("Over Generation fine tuned")
+#         print(over_generate(sentence, model.to('cpu')))
+#         print()
