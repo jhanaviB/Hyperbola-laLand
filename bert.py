@@ -29,9 +29,9 @@ class TrainBert():
     def __init__(self, device='cpu', tokenizer=None) -> None:
         self.tokenizer = tokenizer
         self.device = device
-        self.dataloader = DataLoader(dataset=self.dataset, batch_size=32)
         # self._load_dataset()
         self.dataset = BertDataset(self.tokenizer, max_length=MAX_INPUT_LENGTH)
+        self.dataloader = DataLoader(dataset=self.dataset, batch_size=32)
 
     def _load_dataset(self):
         hypo_frame = pd.read_csv(
